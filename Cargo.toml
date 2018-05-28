@@ -1,0 +1,11 @@
+[package]
+name = "lockfile"
+version = "0.1.0"
+authors = ["Richard Dodd <richard.dodd@itp-group.co.uk>"]
+
+[dependencies]
+fs2 = "0.4"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
