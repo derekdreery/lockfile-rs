@@ -1,4 +1,27 @@
-extern crate fs2;
+//! This crate provides a lockfile struct that marks a location in the filesystem as locked.
+//!
+//! A lock is conceptually created when the file is created, and released when it is deleted.
+//!
+//! If the file is already present, the `create` function will fail.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use lockfile::Lockfile;
+//! # use std::{mem, fs, io};
+//! # use std::path::Path;
+//!
+//! const PATH: &str = "/tmp/some_file/s8329894";
+//! # fn main() -> Result<(), io::Error> {
+//! let lockfile = Lockfile::create(PATH)?;
+//! assert_eq!(lockfile.path(), Path::new(PATH));
+//! lockfile.close()?; // or just let the lockfile be dropped
+//! // File has been unlinked/deleted.
+//! assert_eq!(fs::metadata(PATH).unwrap_err().kind(),
+//!            io::ErrorKind::NotFound);
+//! # Ok(())
+//! # }
+//! ```
 #[macro_use]
 extern crate log;
 
@@ -6,12 +29,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::mem::{self, ManuallyDrop};
 use std::path::{Path, PathBuf};
-
-use fs2::{lock_contended_error, FileExt};
+use std::ops::Deref;
 
 /// A lockfile that cleans up after itself.
 ///
 /// Inspired by `TempPath` in `tempfile` crate.
+///
+/// See module-level documentation for examples.
+#[derive(Debug)]
 pub struct Lockfile {
     handle: ManuallyDrop<File>,
     path: PathBuf,
@@ -22,33 +47,14 @@ impl Lockfile {
     ///
     /// This function will
     ///  1. create parent directories, if necessary,
-    ///  2. create the lockfile, if necessary,
-    ///  3. acquire an exclusive lock the lockfile.
+    ///  2. create the lockfile.
     ///
-    ///  - If the directories or lockfile already exist, it will skip creating them.
-    ///  - If the lockfile is already locked it will block waiting for release.
+    ///  - If the directories already exist, it will skip creating them.
     ///  - Any other error is returned.
     ///
     /// # Panics
     ///
     /// Will panic if the path doesn't have a parent directory.
-    ///
-    /// # Examples
-    ///
-    /// ```no-run
-    /// # use lockfile::Lockfile;
-    /// # use std::{mem, fs, io};
-    /// # use std::path::Path;
-    ///
-    /// const PATH: &str = "/tmp/some_file/s8329894";
-    /// # fn main() -> Result<(), io::Error> {
-    /// let lockfile = Lockfile::create(PATH)?;
-    /// drop(lockfile);
-    /// // File has been unlinked/deleted.
-    /// assert!(fs::metadata(PATH).is_err());
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn create(path: impl AsRef<Path>) -> Result<Lockfile, io::Error> {
         let path = path.as_ref();
 
@@ -62,23 +68,9 @@ impl Lockfile {
 
         // create lockfile (or get a handle if file already exists)
         let mut lockfile_opts = OpenOptions::new();
-        lockfile_opts.create(true).read(true).write(true);
+        lockfile_opts.create_new(true).read(true).write(true);
         let lockfile = lockfile_opts.open(path)?;
-        debug!("lockfile created/found at {}", path.display());
-
-        // lock lockfile
-        match lockfile.try_lock_exclusive() {
-            Ok(_) => (),
-            Err(ref e) if e.kind() == lock_contended_error().kind() => {
-                warn!(
-                    "Lockfile at {} already present and locked, blocking until released",
-                    path.display()
-                );
-                lockfile.lock_exclusive()?;
-            }
-            Err(e) => Err(e)?,
-        };
-        debug!("lockfile locked at {}", path.display());
+        debug!("lockfile created at {}", path.display());
 
         Ok(Lockfile {
             handle: ManuallyDrop::new(lockfile),
@@ -86,7 +78,10 @@ impl Lockfile {
         })
     }
 
-    /// Get the path of the lockfile
+    /// Get the path of the lockfile.
+    ///
+    /// The impl of `AsRef<Path>` can also be used.
+    #[inline]
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -105,12 +100,6 @@ impl Lockfile {
         };
         let handle = ManuallyDrop::into_inner(handle);
 
-        // unlock file
-        if let Err(e) = handle.unlock() {
-            error!("error releasing lockfile at {}: {}", path.display(), e);
-        } else {
-            debug!("lockfile unlocked at {}", path.display());
-        }
         // close file
         drop(handle);
 
@@ -123,15 +112,9 @@ impl Lockfile {
 
 impl Drop for Lockfile {
     fn drop(&mut self) {
-        // we cannot return errors, but we can report them to logs
-        if let Err(e) = self.handle.unlock() {
-            error!("error releasing lockfile at {}: {}", self.path.display(), e);
-        } else {
-            debug!("lockfile unlocked at {}", self.path.display());
-        }
         // Safe because we don't use handle after dropping it.
         unsafe {
-            // close file
+            // close file (this must happen before removal on windows)
             ManuallyDrop::drop(&mut self.handle);
             // remove file
             if let Err(e) = fs::remove_file(&self.path) {
@@ -147,6 +130,55 @@ impl Drop for Lockfile {
     }
 }
 
+impl AsRef<Path> for Lockfile {
+    #[inline]
+    fn as_ref(&self) -> &Path {
+        self.path.as_ref()
+    }
+}
+
+impl io::Read for Lockfile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.handle.deref(), buf)
+    }
+}
+
+impl<'a> io::Read for &'a Lockfile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.handle.deref(), buf)
+    }
+}
+
+impl io::Write for Lockfile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.handle.deref(), buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.handle.deref())
+    }
+}
+
+impl<'a> io::Write for &'a Lockfile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.handle.deref(), buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.handle.deref())
+    }
+}
+
+impl io::Seek for Lockfile {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        io::Seek::seek(&mut self.handle.deref(), pos)
+    }
+}
+
+impl<'a> io::Seek for &'a Lockfile {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        io::Seek::seek(&mut self.handle.deref(), pos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate tempfile;
@@ -154,16 +186,29 @@ mod tests {
     use self::tempfile::NamedTempFile;
     use super::Lockfile;
 
+    use std::path::PathBuf;
     use std::fs;
     use std::io;
 
+    /// create and delete a temp file to get a tmp location.
+    fn tmp_path() -> PathBuf {
+        NamedTempFile::new().unwrap().into_temp_path().to_owned()
+    }
+
     #[test]
     fn smoke() {
-        // create and delete a temp file to get a tmp location.
-        let path = NamedTempFile::new().unwrap().into_temp_path().to_owned();
+        let path = tmp_path();
         let lockfile = Lockfile::create(&path).unwrap();
         assert_eq!(lockfile.path(), path);
-        drop(lockfile);
+        lockfile.close().unwrap();
         assert_eq!(fs::metadata(path).unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn lock_twice() {
+        // check trying to lock twice is an error
+        let path = tmp_path();
+        let _lockfile = Lockfile::create(&path).unwrap();
+        assert_eq!(Lockfile::create(&path).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
     }
 }
