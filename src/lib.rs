@@ -15,7 +15,7 @@
 //! # fn main() -> Result<(), io::Error> {
 //! let lockfile = Lockfile::create(PATH)?;
 //! assert_eq!(lockfile.path(), Path::new(PATH));
-//! lockfile.close()?; // or just let the lockfile be dropped
+//! lockfile.release()?; // or just let the lockfile be dropped
 //! // File has been unlinked/deleted.
 //! assert_eq!(fs::metadata(PATH).unwrap_err().kind(),
 //!            io::ErrorKind::NotFound);
@@ -86,11 +86,11 @@ impl Lockfile {
         self.path.as_path()
     }
 
-    /// Close the file.
+    /// Close and remove the file, releasing the lock.
     ///
     /// Use this instead of the destructor when you want to see if any errors occured when
     /// removing the file.
-    pub fn close(mut self) -> Result<(), io::Error> {
+    pub fn release(mut self) -> Result<(), io::Error> {
         // unpack self without running drop (todo please let me not use unsafe :D)
         let (handle, path) = unsafe {
             let handle = mem::replace(&mut self.handle, mem::zeroed());
@@ -200,7 +200,7 @@ mod tests {
         let path = tmp_path();
         let lockfile = Lockfile::create(&path).unwrap();
         assert_eq!(lockfile.path(), path);
-        lockfile.close().unwrap();
+        lockfile.release().unwrap();
         assert_eq!(fs::metadata(path).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
