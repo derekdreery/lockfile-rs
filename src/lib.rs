@@ -62,7 +62,7 @@ impl Lockfile {
         let dir = path.parent().expect("lockfile path must have a parent");
         fs::create_dir_all(dir)?;
         debug!(
-            "lockfile parent directories created/found at {}",
+            r#"lockfile parent directories created/found at "{}""#,
             dir.display()
         );
 
@@ -70,7 +70,7 @@ impl Lockfile {
         let mut lockfile_opts = OpenOptions::new();
         lockfile_opts.create_new(true).read(true).write(true);
         let lockfile = lockfile_opts.open(path)?;
-        debug!("lockfile created at {}", path.display());
+        debug!(r#"lockfile created at "{}""#, path.display());
 
         Ok(Lockfile {
             handle: ManuallyDrop::new(lockfile),
@@ -105,7 +105,7 @@ impl Lockfile {
 
         // remove file
         fs::remove_file(&path)?;
-        debug!("Removed lockfile at {}", path.display());
+        debug!(r#"Removed lockfile at "{}""#, path.display());
         Ok(())
     }
 }
@@ -119,13 +119,13 @@ impl Drop for Lockfile {
             // remove file
             if let Err(e) = fs::remove_file(&self.path) {
                 warn!(
-                    "could not remove lockfile at {}: {}",
+                    r#"could not remove lockfile at "{}": {}"#,
                     self.path.display(),
                     e
                 );
             }
             // path destructor will be run as usual.
-            debug!("Removed lockfile at {}", self.path.display());
+            debug!(r#"Removed lockfile at "{}""#, self.path.display());
         }
     }
 }
