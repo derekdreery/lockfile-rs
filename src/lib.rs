@@ -91,28 +91,22 @@ impl Lockfile {
     /// Use this instead of the destructor when you want to see if any errors occured when
     /// removing the file.
     pub fn release(mut self) -> Result<(), io::Error> {
-        self.close_file();
+        // Closes the file.
+        self.handle.take().expect("handle already dropped");
         fs::remove_file(&self.path)?;
         debug!(r#"Removed lockfile at "{}""#, self.path.display());
         Ok(())
-    }
-
-    fn close_file(&mut self) {
-        drop(self.handle.take());
     }
 }
 
 impl Drop for Lockfile {
     fn drop(&mut self) {
-        self.close_file();
-        // remove file
-        match fs::remove_file(&self.path) {
-            Ok(()) => debug!(r#"Removed lockfile at "{}""#, self.path.display()),
-            Err(e) => warn!(
-                r#"could not remove lockfile at "{}": {}"#,
-                self.path.display(),
-                e
-            ),
+        if let Some(handle) = self.handle.take() {
+            drop(handle);
+
+            if let Err(e) = fs::remove_file(&self.path) {
+                warn!(r#"could not remove lockfile at "{}": {}"#, self.path.display(), e);
+            }
         }
     }
 }
