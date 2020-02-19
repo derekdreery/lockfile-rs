@@ -104,8 +104,13 @@ impl Drop for Lockfile {
         if let Some(handle) = self.handle.take() {
             drop(handle);
 
-            if let Err(e) = fs::remove_file(&self.path) {
-                warn!(r#"could not remove lockfile at "{}": {}"#, self.path.display(), e);
+            match fs::remove_file(&self.path) {
+                Ok(()) => debug!(r#"Removed lockfile at "{}""#, self.path.display()),
+                Err(e) => warn!(
+                    r#"could not remove lockfile at "{}": {}"#,
+                    self.path.display(),
+                    e
+                ),
             }
         }
     }
