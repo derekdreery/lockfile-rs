@@ -22,14 +22,14 @@
 //! # Ok(())
 //! # }
 //! ```
+#![forbid(unsafe_code)]
+
 #[macro_use]
 extern crate log;
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::mem::{self, ManuallyDrop};
 use std::path::{Path, PathBuf};
-use std::ops::Deref;
 
 /// A lockfile that cleans up after itself.
 ///
@@ -38,7 +38,7 @@ use std::ops::Deref;
 /// See module-level documentation for examples.
 #[derive(Debug)]
 pub struct Lockfile {
-    handle: ManuallyDrop<File>,
+    handle: Option<File>,
     path: PathBuf,
 }
 
@@ -73,7 +73,7 @@ impl Lockfile {
         debug!(r#"lockfile created at "{}""#, path.display());
 
         Ok(Lockfile {
-            handle: ManuallyDrop::new(lockfile),
+            handle: Some(lockfile),
             path: path.to_owned(),
         })
     }
@@ -91,41 +91,28 @@ impl Lockfile {
     /// Use this instead of the destructor when you want to see if any errors occured when
     /// removing the file.
     pub fn release(mut self) -> Result<(), io::Error> {
-        // unpack self without running drop (todo please let me not use unsafe :D)
-        let (handle, path) = unsafe {
-            let handle = mem::replace(&mut self.handle, mem::zeroed());
-            let path = mem::replace(&mut self.path, mem::zeroed());
-            mem::forget(self);
-            (handle, path)
-        };
-        let handle = ManuallyDrop::into_inner(handle);
-
-        // close file
-        drop(handle);
-
-        // remove file
-        fs::remove_file(&path)?;
-        debug!(r#"Removed lockfile at "{}""#, path.display());
+        self.close_file();
+        fs::remove_file(&self.path)?;
+        debug!(r#"Removed lockfile at "{}""#, self.path.display());
         Ok(())
+    }
+
+    fn close_file(&mut self) {
+        drop(self.handle.take());
     }
 }
 
 impl Drop for Lockfile {
     fn drop(&mut self) {
-        // Safe because we don't use handle after dropping it.
-        unsafe {
-            // close file (this must happen before removal on windows)
-            ManuallyDrop::drop(&mut self.handle);
-            // remove file
-            if let Err(e) = fs::remove_file(&self.path) {
-                warn!(
-                    r#"could not remove lockfile at "{}": {}"#,
-                    self.path.display(),
-                    e
-                );
-            }
-            // path destructor will be run as usual.
-            debug!(r#"Removed lockfile at "{}""#, self.path.display());
+        self.close_file();
+        // remove file
+        match fs::remove_file(&self.path) {
+            Ok(()) => debug!(r#"Removed lockfile at "{}""#, self.path.display()),
+            Err(e) => warn!(
+                r#"could not remove lockfile at "{}": {}"#,
+                self.path.display(),
+                e
+            ),
         }
     }
 }
@@ -139,43 +126,43 @@ impl AsRef<Path> for Lockfile {
 
 impl io::Read for Lockfile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        io::Read::read(&mut self.handle.deref(), buf)
+        io::Read::read(&mut self.handle.as_ref().unwrap(), buf)
     }
 }
 
 impl<'a> io::Read for &'a Lockfile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        io::Read::read(&mut self.handle.deref(), buf)
+        io::Read::read(&mut self.handle.as_ref().unwrap(), buf)
     }
 }
 
 impl io::Write for Lockfile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        io::Write::write(&mut self.handle.deref(), buf)
+        io::Write::write(&mut self.handle.as_ref().unwrap(), buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        io::Write::flush(&mut self.handle.deref())
+        io::Write::flush(&mut self.handle.as_ref().unwrap())
     }
 }
 
 impl<'a> io::Write for &'a Lockfile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        io::Write::write(&mut self.handle.deref(), buf)
+        io::Write::write(&mut self.handle.as_ref().unwrap(), buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        io::Write::flush(&mut self.handle.deref())
+        io::Write::flush(&mut self.handle.as_ref().unwrap())
     }
 }
 
 impl io::Seek for Lockfile {
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-        io::Seek::seek(&mut self.handle.deref(), pos)
+        io::Seek::seek(&mut self.handle.as_ref().unwrap(), pos)
     }
 }
 
 impl<'a> io::Seek for &'a Lockfile {
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-        io::Seek::seek(&mut self.handle.deref(), pos)
+        io::Seek::seek(&mut self.handle.as_ref().unwrap(), pos)
     }
 }
 
