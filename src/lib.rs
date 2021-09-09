@@ -13,7 +13,7 @@
 //!
 //! const PATH: &str = "/tmp/some_file/s8329894";
 //! # fn main() -> Result<(), io::Error> {
-//! let lockfile = Lockfile::create(PATH)?;
+//! let lockfile = Lockfile::create(PATH).unwrap();
 //! assert_eq!(lockfile.path(), Path::new(PATH));
 //! lockfile.release()?; // or just let the lockfile be dropped
 //! // File has been unlinked/deleted.
@@ -30,6 +30,49 @@ extern crate log;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// A wrapper around io::Error to distinguish between the lock already existing and other errors.
+///
+/// Without this, it would not be possible to tell if the `io::ErrorKind::AlreadyExists` came from
+/// the lockfile or from the parent directory (if it already exists and is a file).
+///
+/// The error is non-exhaustive, in case we want to give more granular errors in future.
+///
+/// # Examples
+///
+/// ```
+/// use lockfile::Error;
+/// # let err = Error::LockTaken;
+/// // `err` is the value returned by Lockfile::open
+/// match err {
+///     Error::LockTaken => println!("lock exists, maybe we block in some way"),
+///     // Use err.into_inner to handle non exhaustiveness
+///     err => panic!("unrecoverable error: {}", err.into_inner()),
+/// }
+/// ```
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Error {
+    Io(io::Error),
+    LockTaken,
+}
+
+impl Error {
+    /// Get at the underlying `io::Error`.
+    pub fn into_inner(self) -> io::Error {
+        match self {
+            Error::Io(err) => err,
+            Error::LockTaken => io::Error::new(io::ErrorKind::AlreadyExists, "lock already taken"),
+        }
+    }
+
+    fn from_io(e: io::Error) -> Self {
+        match e.kind() {
+            io::ErrorKind::AlreadyExists => Error::LockTaken,
+            _ => Error::Io(e),
+        }
+    }
+}
 
 /// A lockfile that cleans up after itself.
 ///
@@ -55,12 +98,12 @@ impl Lockfile {
     /// # Panics
     ///
     /// Will panic if the path doesn't have a parent directory.
-    pub fn create(path: impl AsRef<Path>) -> Result<Lockfile, io::Error> {
+    pub fn create(path: impl AsRef<Path>) -> Result<Lockfile, Error> {
         let path = path.as_ref();
 
         // create parent directory if not exists (match libalpm behaviour)
         let dir = path.parent().expect("lockfile path must have a parent");
-        fs::create_dir_all(dir)?;
+        fs::create_dir_all(dir).map_err(Error::Io)?;
         debug!(
             r#"lockfile parent directories created/found at "{}""#,
             dir.display()
@@ -69,7 +112,7 @@ impl Lockfile {
         // create lockfile (or get a handle if file already exists)
         let mut lockfile_opts = OpenOptions::new();
         lockfile_opts.create_new(true).read(true).write(true);
-        let lockfile = lockfile_opts.open(path)?;
+        let lockfile = lockfile_opts.open(path).map_err(Error::from_io)?;
         debug!(r#"lockfile created at "{}""#, path.display());
 
         Ok(Lockfile {
@@ -170,11 +213,11 @@ mod tests {
     extern crate tempfile;
 
     use self::tempfile::NamedTempFile;
-    use super::Lockfile;
+    use super::{Error, Lockfile};
 
-    use std::path::PathBuf;
     use std::fs;
     use std::io;
+    use std::path::PathBuf;
 
     /// create and delete a temp file to get a tmp location.
     fn tmp_path() -> PathBuf {
@@ -187,7 +230,10 @@ mod tests {
         let lockfile = Lockfile::create(&path).unwrap();
         assert_eq!(lockfile.path(), path);
         lockfile.release().unwrap();
-        assert_eq!(fs::metadata(path).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            fs::metadata(path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 
     #[test]
@@ -195,6 +241,9 @@ mod tests {
         // check trying to lock twice is an error
         let path = tmp_path();
         let _lockfile = Lockfile::create(&path).unwrap();
-        assert_eq!(Lockfile::create(&path).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert!(matches!(
+            Lockfile::create(&path).unwrap_err(),
+            Error::LockTaken
+        ));
     }
 }
