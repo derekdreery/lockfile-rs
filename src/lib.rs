@@ -24,12 +24,23 @@
 //! ```
 #![forbid(unsafe_code)]
 
-#[macro_use]
-extern crate log;
+use std::{
+    fs::{self, File, OpenOptions}, 
+    io,  fmt,
+    path::{Path, PathBuf}
+};
 
-use std::fs::{self, File, OpenOptions};
-use std::io;
-use std::path::{Path, PathBuf};
+// an empty log wrapper
+#[cfg(not(feature = "log"))]
+macro_rules! warn {
+    ($($_:tt)*) => {()};
+}
+#[cfg(not(feature = "log"))]
+macro_rules! debug {
+    ($($_:tt)*) => {()};
+}
+#[cfg(feature = "log")]
+use log::{debug, warn};
 
 /// A wrapper around io::Error to distinguish between the lock already existing and other errors.
 ///
@@ -62,7 +73,7 @@ impl Error {
     pub fn into_inner(self) -> io::Error {
         match self {
             Error::Io(err) => err,
-            Error::LockTaken => io::Error::new(io::ErrorKind::AlreadyExists, "lock already taken"),
+            Error::LockTaken => io::Error::new(io::ErrorKind::AlreadyExists, "lockfile already exists"),
         }
     }
 
@@ -73,6 +84,17 @@ impl Error {
         }
     }
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::Io(err) => fmt::Display::fmt(err, f),
+            Error::LockTaken => f.write_str("lockfile already exists")
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// A lockfile that cleans up after itself.
 ///
@@ -88,26 +110,11 @@ pub struct Lockfile {
 impl Lockfile {
     /// Create a lockfile at the given path.
     ///
-    /// This function will
-    ///  1. create parent directories, if necessary,
-    ///  2. create the lockfile.
-    ///
-    ///  - If the directories already exist, it will skip creating them.
-    ///  - Any other error is returned.
-    ///
-    /// # Panics
-    ///
-    /// Will panic if the path doesn't have a parent directory.
+    /// Returns an error if the path does not have a parent directory, or if the parent directory
+    /// could not be created.
     pub fn create(path: impl AsRef<Path>) -> Result<Lockfile, Error> {
+        // could create a function boundary here so the body is not monomorphised.
         let path = path.as_ref();
-
-        // create parent directory if not exists (match libalpm behaviour)
-        let dir = path.parent().expect("lockfile path must have a parent");
-        fs::create_dir_all(dir).map_err(Error::Io)?;
-        debug!(
-            r#"lockfile parent directories created/found at "{}""#,
-            dir.display()
-        );
 
         // create lockfile (or get a handle if file already exists)
         let mut lockfile_opts = OpenOptions::new();
@@ -120,6 +127,29 @@ impl Lockfile {
             path: path.to_owned(),
         })
     }
+
+    /// Create a lockfile at the given path.
+    ///
+    /// This function will
+    ///  1. create parent directories, if necessary,
+    ///  2. create the lockfile.
+    ///
+    ///  - If the directories already exist, it will skip creating them.
+    ///  - Any other error is returned.
+    pub fn create_with_parents(path: impl AsRef<Path>) -> Result<Lockfile, Error> {
+        let path = path.as_ref();
+
+        // create parent directory if not exists (match libalpm behaviour)
+        let dir = path.parent().ok_or_else(|| Error::from_io(io::Error::new(io::ErrorKind::InvalidInput, "lockfile path must have a parent")))?;
+        fs::create_dir_all(dir).map_err(Error::Io)?;
+        debug!(
+            r#"lockfile parent directories created/found at "{}""#,
+            dir.display()
+        );
+
+        Self::create(path)
+    }
+
 
     /// Get the path of the lockfile.
     ///
@@ -147,13 +177,16 @@ impl Drop for Lockfile {
         if let Some(handle) = self.handle.take() {
             drop(handle);
 
+            #[allow(unused_variables)]
             match fs::remove_file(&self.path) {
                 Ok(()) => debug!(r#"Removed lockfile at "{}""#, self.path.display()),
-                Err(e) => warn!(
-                    r#"could not remove lockfile at "{}": {}"#,
-                    self.path.display(),
-                    e
-                ),
+                Err(e) => 
+                    warn!(
+                        r#"could not remove lockfile at "{}": {}"#,
+                        self.path.display(),
+                        e
+                    )
+                ,
             }
         }
     }
@@ -165,6 +198,8 @@ impl AsRef<Path> for Lockfile {
         self.path.as_ref()
     }
 }
+
+// allow read/write/seek on the underlying lockfile
 
 impl io::Read for Lockfile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {

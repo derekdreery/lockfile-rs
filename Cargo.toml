@@ -1,6 +1,6 @@
 [package]
 name = "lockfile"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Richard Dodd <richard.o.dodd@gmail.com>"]
 include = ["src/**/*.rs", "Cargo.toml", "README.md", "CHANGELOG.md"]
 description = "Create lockfiles that remove themselves when they are dropped"
@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["lockfile", "lock", "file"]
 categories = ["filesystem", "command-line-utilities"]
 license = "MIT/Apache-2.0/ISC"
+edition = "2021"
 
 [badges]
 travis-ci = { repository = "derekdreery/lockfile-rs" }
@@ -16,7 +17,7 @@ appveyor = { repository = "derekdreery/lockfile-rs" }
 maintenance = { status = "experimental" }
 
 [dependencies]
-log = "0.4.8"
+log = { version = "0.4.17", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
